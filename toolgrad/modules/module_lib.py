@@ -619,17 +619,34 @@ def wrap_tool_with_tracking(tool: StructuredTool,
 
   Returns:
     A new StructuredTool with decorated function
-  """
-  # Apply the tracking decorator to the tool's function
-  tracked_func = track_tool_invocation(tracker)(tool.func)
 
-  # Create a new tool with the decorated function
+  MCP tools discovered by ``langchain_mcp_adapters`` are async-only:
+  ``tool.func`` is ``None`` and only ``tool.coroutine`` exists. Wrapping
+  ``None`` in the sync branch produced ``TypeError: 'NoneType' object is
+  not callable`` at execution time. Track whichever callables exist.
+  """
+  # Apply the tracking decorator to whichever callables the tool has.
+  # Async-only tools (func=None) track the coroutine; sync tools track
+  # the func. Both are tracked when both exist.
+  coroutine = tool.coroutine if hasattr(tool, "coroutine") else None
+  tracked_func = (
+      track_tool_invocation(tracker)(tool.func) if tool.func is not None else None
+  )
+  tracked_coroutine = (
+      track_tool_invocation(tracker)(coroutine) if coroutine is not None else None
+  )
+  if tracked_func is None and tracked_coroutine is None:
+    raise ValueError(
+        f"tool {tool.name!r} has neither func nor coroutine; cannot wrap"
+    )
+
+  # Create a new tool with the decorated function(s)
   return StructuredTool(
       name=tool.name,
       description=tool.description,
       func=tracked_func,
       args_schema=tool.args_schema,
-      coroutine=tool.coroutine if hasattr(tool, 'coroutine') else None,
+      coroutine=tracked_coroutine,
   )
 
 

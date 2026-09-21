@@ -91,8 +91,40 @@ def _wrap_with_path_prefix(tool: StructuredTool, base_path: str) -> StructuredTo
        new_kwargs['paths'] = [os.path.join(base_path, p) if not os.path.isabs(p) else p for p in new_kwargs['paths']]
     return new_kwargs
 
-  def new_func(**kwargs):
-    return original_func(**wrap_args(kwargs))
+  if original_func is None and original_coroutine is not None:
+    # Async-only MCP tools have no sync callable. Run the coroutine
+    # synchronously (worker thread when already inside an event loop) so
+    # sync ``invoke()`` paths work too.
+    import asyncio as _asyncio
+    import threading as _threading
+
+    def new_func(**kwargs):
+      wrapped = wrap_args(kwargs)
+
+      async def _call():
+        return await original_coroutine(**wrapped)
+
+      try:
+        _asyncio.get_running_loop()
+      except RuntimeError:
+        return _asyncio.run(_call())
+      box: dict = {}
+
+      def _runner():
+        try:
+          box["result"] = _asyncio.run(_call())
+        except BaseException as exc:  # noqa: BLE001 — re-raised below
+          box["error"] = exc
+
+      thread = _threading.Thread(target=_runner, daemon=True)
+      thread.start()
+      thread.join()
+      if "error" in box:
+        raise box["error"]
+      return box.get("result")
+  else:
+    def new_func(**kwargs):
+      return original_func(**wrap_args(kwargs))
 
   if original_coroutine:
     async def new_coroutine(**kwargs):
